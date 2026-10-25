@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CIP — Autorizar acesso</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif; }
+    body { margin:0; min-height:100vh; display:grid; place-items:center; background:#0b0f14; color:#eef2f6; }
+    main { width:min(440px,calc(100% - 32px)); padding:32px; border:1px solid #263241; border-radius:18px; background:#121820; box-shadow:0 20px 60px #0008; }
+    h1 { margin:0 0 8px; font-size:28px; }
+    p { color:#b9c4d0; line-height:1.5; }
+    input,button { width:100%; box-sizing:border-box; padding:13px 14px; margin-top:12px; border-radius:10px; font:inherit; }
+    input { border:1px solid #344152; background:#0b1017; color:#fff; }
+    button { border:0; cursor:pointer; font-weight:700; background:#2e7df6; color:#fff; }
+    button.secondary { background:#263241; }
+    .error { color:#ff9b9b; }
+    [hidden] { display:none!important; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Acesso ao CIP</h1>
+  <p id="message">Carregando autorização…</p>
+  <form id="login" hidden>
+    <input id="email" type="email" required autocomplete="username" placeholder="E-mail">
+    <input id="password" type="password" required autocomplete="current-password" placeholder="Senha">
+    <button type="submit">Entrar</button>
+  </form>
+  <div id="consent" hidden>
+    <button id="approve">Autorizar acesso somente leitura</button>
+    <button id="deny" class="secondary">Recusar</button>
+  </div>
+</main>
+<script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.75.0';
+
+const supabase = createClient(
+  'https://wbsqdzrxalfddvmjvlbh.supabase.co',
+  'sb_publishable_yxp8wXBhjOs2ajf3Dgtg_w_sW43vdPn'
+);
+const authorizationId = new URLSearchParams(location.search).get('authorization_id');
+const message = document.querySelector('#message');
+const login = document.querySelector('#login');
+const consent = document.querySelector('#consent');
+
+function showError(text) {
+  message.textContent = text;
+  message.className = 'error';
+}
+
+async function load() {
+  message.className = '';
+  if (!authorizationId) return showError('Solicitação OAuth ausente. Volte ao ChatGPT e clique em Conectar novamente.');
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    message.textContent = 'Entre com o usuário autorizado do CIP.';
+    login.hidden = false;
+    return;
+  }
+  const { data, error } = await supabase.auth.oauth.getAuthorizationDetails(authorizationId);
+  if (error) return showError(error.message);
+  if (data?.redirect_url && !data?.authorization_id) {
+    location.href = data.redirect_url;
+    return;
+  }
+  message.textContent = 'O ChatGPT solicita acesso somente leitura aos dados do QuickBooks do CIP.';
+  consent.hidden = false;
+}
+
+login.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  message.textContent = 'Validando…';
+  const { error } = await supabase.auth.signInWithPassword({
+    email: document.querySelector('#email').value,
+    password: document.querySelector('#password').value
+  });
+  if (error) return showError(error.message);
+  login.hidden = true;
+  await load();
+});
+
+document.querySelector('#approve').addEventListener('click', async () => {
+  const { data, error } = await supabase.auth.oauth.approveAuthorization(authorizationId);
+  if (error) return showError(error.message);
+  location.href = data.redirect_url;
+});
+
+document.querySelector('#deny').addEventListener('click', async () => {
+  const { data, error } = await supabase.auth.oauth.denyAuthorization(authorizationId);
+  if (error) return showError(error.message);
+  location.href = data.redirect_url;
+});
+
+await load();
+</script>
+</body>
+</html>
