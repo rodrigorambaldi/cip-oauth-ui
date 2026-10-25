@@ -37,7 +37,12 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.75.0';
 
 const supabase = createClient(
   'https://wbsqdzrxalfddvmjvlbh.supabase.co',
-  'sb_publishable_yxp8wXBhjOs2ajf3Dgtg_w_sW43vdPn'
+  'sb_publishable_yxp8wXBhjOs2ajf3Dgtg_w_sW43vdPn',
+  {
+    auth: {
+      lock: async (_name, _acquireTimeout, callback) => await callback()
+    }
+  }
 );
 const authorizationId = new URLSearchParams(location.search).get('authorization_id');
 const message = document.querySelector('#message');
