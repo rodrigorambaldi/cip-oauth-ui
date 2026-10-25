@@ -33,17 +33,9 @@
   </div>
 </main>
 <script type="module">
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.75.0';
-
-const supabase = createClient(
-  'https://wbsqdzrxalfddvmjvlbh.supabase.co',
-  'sb_publishable_yxp8wXBhjOs2ajf3Dgtg_w_sW43vdPn',
-  {
-    auth: {
-      lock: async (_name, _acquireTimeout, callback) => await callback()
-    }
-  }
-);
+const supabaseUrl = 'https://wbsqdzrxalfddvmjvlbh.supabase.co';
+const publishableKey = 'sb_publishable_yxp8wXBhjOs2ajf3Dgtg_w_sW43vdPn';
+let accessToken = null;
 const authorizationId = new URLSearchParams(location.search).get('authorization_id');
 const message = document.querySelector('#message');
 const login = document.querySelector('#login');
@@ -54,17 +46,42 @@ function showError(text) {
   message.className = 'error';
 }
 
+function getAccessToken() {
+  return accessToken;
+}
+
+async function oauthRequest(path, options = {}) {
+  const accessToken = getAccessToken();
+  if (!accessToken) return { response: null, data: null };
+  const response = await fetch(`${supabaseUrl}/auth/v1${path}`, {
+    ...options,
+    headers: {
+      apikey: publishableKey,
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    }
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.msg || data.message || data.error_description || 'Falha na autorização.');
+  return { response, data };
+}
+
 async function load() {
   message.className = '';
   if (!authorizationId) return showError('Solicitação OAuth ausente. Volte ao ChatGPT e clique em Conectar novamente.');
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) {
+  if (!getAccessToken()) {
     message.textContent = 'Entre com o usuário autorizado do CIP.';
     login.hidden = false;
     return;
   }
-  const { data, error } = await supabase.auth.oauth.getAuthorizationDetails(authorizationId);
-  if (error) return showError(error.message);
+  let data;
+  try {
+    ({ data } = await oauthRequest(`/oauth/authorizations/${encodeURIComponent(authorizationId)}`));
+  } catch (error) {
+    accessToken = null;
+    return showError(error.message);
+  }
   if (data?.redirect_url && !data?.authorization_id) {
     location.href = data.redirect_url;
     return;
@@ -76,25 +93,37 @@ async function load() {
 login.addEventListener('submit', async (event) => {
   event.preventDefault();
   message.textContent = 'Validando…';
-  const { error } = await supabase.auth.signInWithPassword({
-    email: document.querySelector('#email').value,
-    password: document.querySelector('#password').value
+  const response = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
+    method: 'POST',
+    headers: { apikey: publishableKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: document.querySelector('#email').value,
+      password: document.querySelector('#password').value
+    })
   });
-  if (error) return showError(error.message);
+  const session = await response.json();
+  if (!response.ok) return showError(session.msg || session.message || session.error_description || 'Não foi possível entrar.');
+  accessToken = session.access_token;
   login.hidden = true;
   await load();
 });
 
 document.querySelector('#approve').addEventListener('click', async () => {
-  const { data, error } = await supabase.auth.oauth.approveAuthorization(authorizationId);
-  if (error) return showError(error.message);
-  location.href = data.redirect_url;
+  try {
+    const { data } = await oauthRequest(`/oauth/authorizations/${encodeURIComponent(authorizationId)}/consent`, {
+      method: 'POST', body: JSON.stringify({ action: 'approve' })
+    });
+    location.href = data.redirect_url;
+  } catch (error) { showError(error.message); }
 });
 
 document.querySelector('#deny').addEventListener('click', async () => {
-  const { data, error } = await supabase.auth.oauth.denyAuthorization(authorizationId);
-  if (error) return showError(error.message);
-  location.href = data.redirect_url;
+  try {
+    const { data } = await oauthRequest(`/oauth/authorizations/${encodeURIComponent(authorizationId)}/consent`, {
+      method: 'POST', body: JSON.stringify({ action: 'deny' })
+    });
+    location.href = data.redirect_url;
+  } catch (error) { showError(error.message); }
 });
 
 await load();
