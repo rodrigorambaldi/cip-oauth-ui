@@ -14,6 +14,8 @@
     input { border:1px solid #344152; background:#0b1017; color:#fff; }
     button { border:0; cursor:pointer; font-weight:700; background:#2e7df6; color:#fff; }
     button.secondary { background:#263241; }
+    #qr { display:block; width:220px; height:220px; margin:16px auto 4px; padding:10px; border-radius:12px; background:#fff; }
+    .secret { overflow-wrap:anywhere; color:#eef2f6; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; }
     .error { color:#ff9b9b; }
     [hidden] { display:none!important; }
   </style>
@@ -30,6 +32,17 @@
   <form id="mfa" hidden>
     <input id="totp" type="text" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="Código do autenticador">
     <button type="submit">Confirmar segundo fator</button>
+  </form>
+  <form id="enroll" hidden>
+    <p>1. Abra o Google Authenticator ou Microsoft Authenticator.<br>2. Adicione uma conta e leia este QR code.<br>3. Digite abaixo o código de seis dígitos gerado.</p>
+    <img id="qr" alt="QR code para cadastrar o autenticador">
+    <details>
+      <summary>Não consegue ler o QR code?</summary>
+      <p>Cadastre manualmente esta chave:</p>
+      <p id="secret" class="secret"></p>
+    </details>
+    <input id="enroll-totp" type="text" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="Código de seis dígitos">
+    <button type="submit">Ativar e continuar</button>
   </form>
   <div id="consent" hidden>
     <button id="approve">Autorizar acesso somente leitura</button>
@@ -48,7 +61,9 @@ const authorizationId = new URLSearchParams(location.search).get('authorization_
 const message = document.querySelector('#message');
 const login = document.querySelector('#login');
 const mfa = document.querySelector('#mfa');
+const enroll = document.querySelector('#enroll');
 const consent = document.querySelector('#consent');
+let enrollmentFactorId = null;
 
 function showError(text) {
   message.textContent = text;
@@ -102,12 +117,28 @@ async function load() {
 async function requireMfaIfNeeded() {
   const { data: assurance, error: assuranceError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
   if (assuranceError) throw assuranceError;
-  if (assurance?.nextLevel === 'aal2' && assurance.currentLevel !== 'aal2') {
+  if (assurance?.currentLevel === 'aal2') return false;
+
+  const { data: factors, error: factorsError } = await supabase.auth.mfa.listFactors();
+  if (factorsError) throw factorsError;
+  const verifiedFactor = factors?.totp?.find(item => item.status === 'verified');
+  if (verifiedFactor) {
     message.textContent = 'Digite o código de seis dígitos do seu aplicativo autenticador.';
     mfa.hidden = false;
     return true;
   }
-  return false;
+
+  const { data: enrollment, error: enrollmentError } = await supabase.auth.mfa.enroll({
+    factorType: 'totp',
+    friendlyName: 'CIP QuickBooks'
+  });
+  if (enrollmentError) throw enrollmentError;
+  enrollmentFactorId = enrollment.id;
+  document.querySelector('#qr').src = enrollment.totp.qr_code;
+  document.querySelector('#secret').textContent = enrollment.totp.secret;
+  message.textContent = 'Cadastre o autenticador para proteger o acesso ao CIP.';
+  enroll.hidden = false;
+  return true;
 }
 
 login.addEventListener('submit', async (event) => {
@@ -145,6 +176,25 @@ mfa.addEventListener('submit', async (event) => {
     mfa.hidden = true;
     await load();
   } catch (error) { showError(error.message || 'Não foi possível validar o segundo fator.'); }
+});
+
+enroll.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  message.className = '';
+  message.textContent = 'Ativando o autenticador…';
+  try {
+    if (!enrollmentFactorId) throw new Error('Cadastro do autenticador ausente. Entre novamente.');
+    const { error: verifyError } = await supabase.auth.mfa.challengeAndVerify({
+      factorId: enrollmentFactorId,
+      code: document.querySelector('#enroll-totp').value
+    });
+    if (verifyError) throw verifyError;
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError || !sessionData.session) throw sessionError || new Error('Sessão MFA ausente.');
+    accessToken = sessionData.session.access_token;
+    enroll.hidden = true;
+    await load();
+  } catch (error) { showError(error.message || 'Não foi possível ativar o autenticador.'); }
 });
 
 document.querySelector('#approve').addEventListener('click', async () => {
