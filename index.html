@@ -27,18 +27,27 @@
     <input id="password" type="password" required autocomplete="current-password" placeholder="Senha">
     <button type="submit">Entrar</button>
   </form>
+  <form id="mfa" hidden>
+    <input id="totp" type="text" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="Código do autenticador">
+    <button type="submit">Confirmar segundo fator</button>
+  </form>
   <div id="consent" hidden>
     <button id="approve">Autorizar acesso somente leitura</button>
     <button id="deny" class="secondary">Recusar</button>
   </div>
 </main>
 <script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.79.0?pin=v135';
 const supabaseUrl = 'https://wbsqdzrxalfddvmjvlbh.supabase.co';
 const publishableKey = 'sb_publishable_yxp8wXBhjOs2ajf3Dgtg_w_sW43vdPn';
+const supabase = createClient(supabaseUrl, publishableKey, {
+  auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+});
 let accessToken = null;
 const authorizationId = new URLSearchParams(location.search).get('authorization_id');
 const message = document.querySelector('#message');
 const login = document.querySelector('#login');
+const mfa = document.querySelector('#mfa');
 const consent = document.querySelector('#consent');
 
 function showError(text) {
@@ -90,22 +99,52 @@ async function load() {
   consent.hidden = false;
 }
 
+async function requireMfaIfNeeded() {
+  const { data: assurance, error: assuranceError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+  if (assuranceError) throw assuranceError;
+  if (assurance?.nextLevel === 'aal2' && assurance.currentLevel !== 'aal2') {
+    message.textContent = 'Digite o código de seis dígitos do seu aplicativo autenticador.';
+    mfa.hidden = false;
+    return true;
+  }
+  return false;
+}
+
 login.addEventListener('submit', async (event) => {
   event.preventDefault();
   message.textContent = 'Validando…';
-  const response = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
-    method: 'POST',
-    headers: { apikey: publishableKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      email: document.querySelector('#email').value,
-      password: document.querySelector('#password').value
-    })
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: document.querySelector('#email').value,
+    password: document.querySelector('#password').value
   });
-  const session = await response.json();
-  if (!response.ok) return showError(session.msg || session.message || session.error_description || 'Não foi possível entrar.');
-  accessToken = session.access_token;
+  if (error || !data.session) return showError(error?.message || 'Não foi possível entrar.');
+  accessToken = data.session.access_token;
   login.hidden = true;
+  try {
+    if (await requireMfaIfNeeded()) return;
+  } catch (error) { return showError(error.message); }
   await load();
+});
+
+mfa.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  message.textContent = 'Validando o segundo fator…';
+  try {
+    const { data: factors, error: factorsError } = await supabase.auth.mfa.listFactors();
+    if (factorsError) throw factorsError;
+    const factor = factors?.totp?.find(item => item.status === 'verified');
+    if (!factor) return showError('Nenhum autenticador TOTP verificado está disponível para esta conta.');
+    const { error: verifyError } = await supabase.auth.mfa.challengeAndVerify({
+      factorId: factor.id,
+      code: document.querySelector('#totp').value
+    });
+    if (verifyError) throw verifyError;
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError || !sessionData.session) throw sessionError || new Error('Sessão MFA ausente.');
+    accessToken = sessionData.session.access_token;
+    mfa.hidden = true;
+    await load();
+  } catch (error) { showError(error.message || 'Não foi possível validar o segundo fator.'); }
 });
 
 document.querySelector('#approve').addEventListener('click', async () => {
